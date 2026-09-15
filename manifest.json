@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "zoltan.auto-nightlight",
+  "name": "Automatic Night Light",
+  "version": "1.0.0",
+  "author": "Zoltan",
+  "description": "Timezone-aware sunrise/sunset night light with manual override.",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": { "service": "Service.qml" }
+}

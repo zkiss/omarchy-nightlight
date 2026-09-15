@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep automatic night light synchronized with sunrise and sunset
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=omarchy-auto-nightlight.service
+
+[Install]
+WantedBy=graphical-session.target
