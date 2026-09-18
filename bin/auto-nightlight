@@ -34,6 +34,9 @@ if [[ -e $override ]]; then
      [[ $override_state != true && $override_state != false ]]; then
     rm -f "$override" "$last"
     override_state=""
+  elif [[ $override_state == "$desired" ]]; then
+    rm -f "$override"
+    override_state=""
   fi
 fi
 
