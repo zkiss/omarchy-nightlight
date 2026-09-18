@@ -15,83 +15,64 @@ BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,
 now=$(date +%s)
 (( now >= sunset || now < sunrise )) && desired=true || desired=false
 
-persistent_state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"
-runtime_state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
-mkdir -p "$persistent_state" "$runtime_state"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
+mkdir -p "$state" "$runtime"
+override="$state/manual-override"
+last="$runtime/last-scheduled-state"
 
-override="$persistent_state/manual-override"
-last="$runtime_state/last-auto-state"
-override_max_age=$((12 * 60 * 60))
+set_state() {
+  [[ $1 == true ]] && action=enable || action=disable
+  omarchy shell nightlight "$action" >/dev/null
+}
 
 apply_desired() {
-  local action
-  [[ $desired == true ]] && action=enable || action=disable
-  omarchy shell nightlight "$action" >/dev/null
+  set_state "$desired"
   printf '%s\n' "$desired" >"$last"
 }
 
 override_state=""
+override_expired=0
 if [[ -e $override ]]; then
-  override_mtime=$(stat -c %Y "$override" 2>/dev/null || printf '0')
-  override_age=$((now - override_mtime))
-  override_state=$(<"$override")
-
-  if (( override_age < 0 || override_age >= override_max_age )) ||
-     [[ $override_state != true && $override_state != false ]]; then
-    rm -f "$override"
-    override_state=""
-  elif [[ $override_state == "$desired" ]]; then
-    # Sunrise/sunset has caught up with the manual choice.
-    rm -f "$override"
-    override_state=""
+  age=$((now - $(stat -c %Y "$override" 2>/dev/null || printf '0')))
+  if (( age >= 0 && age < 43200 )); then
+    override_state=$(<"$override")
   fi
+  if [[ $override_state != true && $override_state != false ]]; then
+    rm -f "$override"
+    override_state=""
+    override_expired=1
+  fi
+fi
+
+# Preserve a still-valid override across login/reboot before trusting the
+# freshly-started nightlight state.
+if [[ -n $override_state && ! -r $last ]]; then
+  if [[ $override_state == "$desired" ]]; then
+    rm -f "$override"
+    apply_desired
+  else
+    set_state "$override_state"
+  fi
+  exit 0
 fi
 
 status=$(omarchy shell nightlight status 2>/dev/null) || exit 1
 current=$(jq -r '.enabled' <<<"$status")
 [[ $current == true || $current == false ]] || exit 1
 
-if [[ -r $last ]]; then
-  last_state=$(<"$last")
-  if [[ $last_state != true && $last_state != false ]]; then
-    rm -f "$last"
-    last_state=""
-  fi
-else
-  last_state=""
-fi
-
-# A persisted override survives a new login/session. Restore it before using the
-# fresh Omarchy state to infer user intent.
-if [[ -n $override_state && ! -r $last ]]; then
-  if [[ $current != "$override_state" ]]; then
-    [[ $override_state == true ]] && action=enable || action=disable
-    omarchy shell nightlight "$action" >/dev/null
-  fi
-  exit 0
-fi
-
-# Once the current state matches the schedule, automation owns it again.
 if [[ $current == "$desired" ]]; then
   rm -f "$override"
   printf '%s\n' "$desired" >"$last"
   exit 0
 fi
 
-# A still-valid manual override owns the opposite state.
 [[ -n $override_state ]] && exit 0
 
-# No automatic state exists yet in this login/session, so establish it.
-if [[ ! -r $last ]]; then
+if (( override_expired )) || [[ ! -r $last ]] || [[ "$(<"$last")" != "$desired" ]]; then
   apply_desired
   exit 0
 fi
 
-if [[ $current != "$last_state" ]]; then
-  # Something external toggled the last state automation applied.
-  printf '%s\n' "$current" >"$override"
-  exit 0
-fi
-
-# The state is still what automation last applied, but sunrise/sunset changed.
-apply_desired
+# Desired state has not changed, so this mismatch was a manual toggle.
+printf '%s\n' "$current" >"$override"
