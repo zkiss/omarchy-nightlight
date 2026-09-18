@@ -2,12 +2,6 @@
 # Local IANA timezone coordinates + NOAA solar calculation; no network calls.
 set -euo pipefail
 
-mode=${1:-periodic}
-case "$mode" in
-  startup|periodic) ;;
-  *) echo "usage: $0 [startup|periodic]" >&2; exit 2 ;;
-esac
-
 zone=$(readlink -f /etc/localtime | sed -n 's#^/usr/share/zoneinfo/##p')
 coords=$(awk -v z="$zone" '$3 == z { print $2; exit }' /usr/share/zoneinfo/zone.tab)
 [[ -n $coords ]] || exit 0
@@ -17,16 +11,22 @@ function dec(p,k,s,x,g,m,q){s=substr(p,1,1)=="-"?-1:1;x=substr(p,2);g=substr(x,1
 function sun(up,N,lat,lon,L,t,M,S,A,ql,qr,sd,cd,ch,H,T,U){L=lon/15;t=N+((up?6:18)-L)/24;M=.9856*t-3.289;S=n(M+1.916*sin(r(M))+.020*sin(r(2*M))+282.634);A=n(d(atan2(.91764*sin(r(S)),cos(r(S)))))/15;ql=int(S/90)*90;qr=int(A*15/90)*90;A+=(ql-qr)/15;sd=.39782*sin(r(S));cd=sqrt(1-sd*sd);ch=(cos(r(90.833))-sd*sin(r(lat)))/(cd*cos(r(lat)));if(ch>1||ch< -1)return -1;H=up?360-d(atan2(sqrt(1-ch*ch),ch)):d(atan2(sqrt(1-ch*ch),ch));T=H/15+A-.06571*t-6.622;U=(T-L)%24;if(U<0)U+=24;return midnight+int(U*3600+.5)}
 BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,p),3);q="date -u -d \"today 00:00\" +%s";q|getline midnight;close(q);q="date +%j";q|getline day;close(q);print sun(1,day,lat,lon),sun(0,day,lat,lon)}')
 [[ $sunrise =~ ^[0-9]+$ && $sunset =~ ^[0-9]+$ ]] || exit 0
-now=$(date +%s); (( now >= sunset || now < sunrise )) && target=4000 || target=6500
 
-state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"; mkdir -p "$state"
-last="$state/last-auto-temperature"; override="$state/manual-override"
+now=$(date +%s)
+(( now >= sunset || now < sunrise )) && target=4000 || target=6500
+
+persistent_state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"
+runtime_state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
+mkdir -p "$persistent_state" "$runtime_state"
+
+override="$persistent_state/manual-override"
+last="$runtime_state/last-auto-temperature"
 override_max_age=$((12 * 60 * 60))
 
-apply_target() {
+apply_temperature() {
+  local temperature=$1
   for _ in {1..10}; do
-    if hyprctl hyprsunset temperature "$target" >/dev/null 2>&1; then
-      printf '%s\n' "$target" >"$last"
+    if hyprctl hyprsunset temperature "$temperature" >/dev/null 2>&1; then
       return 0
     fi
     sleep .2
@@ -34,54 +34,70 @@ apply_target() {
   return 1
 }
 
-# A missing hyprsunset process has no user temperature state to preserve.
-# Start it and restore the scheduled value directly.
+apply_target() {
+  apply_temperature "$target"
+  printf '%s\n' "$target" >"$last"
+}
+
+override_temperature=""
+if [[ -e $override ]]; then
+  override_mtime=$(stat -c %Y "$override" 2>/dev/null || printf '0')
+  override_age=$((now - override_mtime))
+  if (( override_age >= 0 && override_age < override_max_age )); then
+    override_temperature=$(<"$override")
+    [[ $override_temperature =~ ^[0-9]+$ ]] || { rm -f "$override"; override_temperature=""; }
+  else
+    rm -f "$override"
+  fi
+fi
+
+# If hyprsunset is absent, recreate whichever state currently owns the setting:
+# a still-valid manual override, otherwise the scheduled temperature.
 if ! pgrep -x hyprsunset >/dev/null; then
   setsid uwsm-app -- hyprsunset >/dev/null 2>&1 &
   sleep 1
-  rm -f "$override"
-  apply_target
-  exit
-fi
-
-# Startup is authoritative: discard stale/manual state and immediately restore
-# the temperature appropriate for the current time.
-if [[ $mode == startup ]]; then
-  rm -f "$override"
-  apply_target
+  if [[ -n $override_temperature ]]; then
+    apply_temperature "$override_temperature"
+  else
+    apply_target
+  fi
   exit
 fi
 
 current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
 [[ $current =~ ^[0-9]+$ ]] || exit 1
 
-# Returning to the scheduled value explicitly resumes automation.
+# If the current value matches what automation wants, the manual override is no
+# longer meaningful, regardless of how recently it was created.
 if [[ $current == "$target" ]]; then
   rm -f "$override"
   printf '%s\n' "$target" >"$last"
   exit 0
 fi
 
-# A manual override is respected for at most 12 hours. Once it expires,
-# automation takes control again instead of treating the unchanged manual
-# temperature as a fresh override.
-if [[ -e $override ]]; then
-  override_mtime=$(stat -c %Y "$override" 2>/dev/null || printf '0')
-  override_age=$((now - override_mtime))
-  if (( override_age >= 0 && override_age < override_max_age )); then
-    exit 0
+# A valid manual override owns the temperature for up to 12 hours. If the user
+# changes it again, store the new value and restart the 12-hour window.
+if [[ -n $override_temperature ]]; then
+  if [[ $current != "$override_temperature" ]]; then
+    printf '%s\n' "$current" >"$override"
   fi
-  rm -f "$override"
+  exit 0
+fi
+
+# With no runtime automatic state, this is a fresh session. Establish the
+# scheduled value instead of guessing whether the existing value was manual.
+if [[ ! -r $last ]]; then
   apply_target
   exit
 fi
 
-# A non-scheduled external temperature change is treated as a manual override.
-if [[ -r $last && $current != "$(<"$last")" ]]; then
+last_temperature=$(<"$last")
+if [[ $current != "$last_temperature" ]]; then
+  # Something external changed the last value automation applied.
   printf '%s\n' "$current" >"$override"
   exit 0
 fi
 
-# The target changed (sunrise/sunset) while the current value still matches the
-# last automatic value, so advance to the new scheduled temperature.
+# The current value is still the last automatic value, but the scheduled target
+# has changed at sunrise/sunset.
 apply_target
