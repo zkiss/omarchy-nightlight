@@ -21,12 +21,7 @@ now=$(date +%s); (( now >= sunset || now < sunrise )) && target=4000 || target=6
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"; mkdir -p "$state"
 last="$state/last-auto-temperature"; override="$state/manual-override"
-
-started_hyprsunset=0
-if ! pgrep -x hyprsunset >/dev/null; then
-  uwsm-app -- hyprsunset >/dev/null 2>&1 & sleep 1
-  started_hyprsunset=1
-fi
+override_max_age=$((12 * 60 * 60))
 
 apply_target() {
   for _ in {1..10}; do
@@ -39,17 +34,19 @@ apply_target() {
   return 1
 }
 
-# Startup is authoritative: discard stale manual state and immediately restore
-# the temperature appropriate for the current time.
-if [[ $mode == startup ]]; then
+# A missing hyprsunset process has no user temperature state to preserve.
+# Start it and restore the scheduled value directly.
+if ! pgrep -x hyprsunset >/dev/null; then
+  setsid uwsm-app -- hyprsunset >/dev/null 2>&1 &
+  sleep 1
   rm -f "$override"
   apply_target
   exit
 fi
 
-# If hyprsunset had to be restarted, its current temperature is not user intent;
-# restore the scheduled value rather than treating its default as an override.
-if (( started_hyprsunset )); then
+# Startup is authoritative: discard stale/manual state and immediately restore
+# the temperature appropriate for the current time.
+if [[ $mode == startup ]]; then
   rm -f "$override"
   apply_target
   exit
@@ -58,14 +55,28 @@ fi
 current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
 [[ $current =~ ^[0-9]+$ ]] || exit 1
 
-# A non-scheduled external temperature change is treated as a manual override.
-# Setting it back to the current scheduled value resumes automation.
+# Returning to the scheduled value explicitly resumes automation.
 if [[ $current == "$target" ]]; then
   rm -f "$override"
   printf '%s\n' "$target" >"$last"
   exit 0
 fi
-[[ -e $override ]] && exit 0
+
+# A manual override is respected for at most 12 hours. Once it expires,
+# automation takes control again instead of treating the unchanged manual
+# temperature as a fresh override.
+if [[ -e $override ]]; then
+  override_mtime=$(stat -c %Y "$override" 2>/dev/null || printf '0')
+  override_age=$((now - override_mtime))
+  if (( override_age >= 0 && override_age < override_max_age )); then
+    exit 0
+  fi
+  rm -f "$override"
+  apply_target
+  exit
+fi
+
+# A non-scheduled external temperature change is treated as a manual override.
 if [[ -r $last && $current != "$(<"$last")" ]]; then
   printf '%s\n' "$current" >"$override"
   exit 0
