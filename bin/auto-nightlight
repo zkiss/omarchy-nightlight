@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Local IANA timezone coordinates + NOAA solar calculation; no network calls.
 set -euo pipefail
+
+mode=${1:-periodic}
+case "$mode" in
+  startup|periodic) ;;
+  *) echo "usage: $0 [startup|periodic]" >&2; exit 2 ;;
+esac
+
 zone=$(readlink -f /etc/localtime | sed -n 's#^/usr/share/zoneinfo/##p')
 coords=$(awk -v z="$zone" '$3 == z { print $2; exit }' /usr/share/zoneinfo/zone.tab)
 [[ -n $coords ]] || exit 0
@@ -13,33 +20,57 @@ BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,
 now=$(date +%s); (( now >= sunset || now < sunrise )) && target=4000 || target=6500
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"; mkdir -p "$state"
-last="$state/last-auto-temperature"; override="$state/manual-override"; boot_marker="$state/boot-id"
-fresh_start=0
-boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
-if [[ -n $boot_id ]] && { [[ ! -r $boot_marker ]] || [[ "$(<"$boot_marker")" != "$boot_id" ]]; }; then
-  fresh_start=1
-  printf '%s\n' "$boot_id" >"$boot_marker"
-fi
+last="$state/last-auto-temperature"; override="$state/manual-override"
 
+started_hyprsunset=0
 if ! pgrep -x hyprsunset >/dev/null; then
   uwsm-app -- hyprsunset >/dev/null 2>&1 & sleep 1
-  fresh_start=1
+  started_hyprsunset=1
+fi
+
+apply_target() {
+  for _ in {1..10}; do
+    if hyprctl hyprsunset temperature "$target" >/dev/null 2>&1; then
+      printf '%s\n' "$target" >"$last"
+      return 0
+    fi
+    sleep .2
+  done
+  return 1
+}
+
+# Startup is authoritative: discard stale manual state and immediately restore
+# the temperature appropriate for the current time.
+if [[ $mode == startup ]]; then
+  rm -f "$override"
+  apply_target
+  exit
+fi
+
+# If hyprsunset had to be restarted, its current temperature is not user intent;
+# restore the scheduled value rather than treating its default as an override.
+if (( started_hyprsunset )); then
+  rm -f "$override"
+  apply_target
+  exit
 fi
 
 current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
 [[ $current =~ ^[0-9]+$ ]] || exit 1
 
-# A fresh boot or hyprsunset process must start in the scheduled state. Do not
-# mistake hyprsunset's initial/default temperature for a manual override.
-if (( fresh_start )); then rm -f "$override"; fi
-
-# A non-scheduled manual temperature pauses automation; setting it back to the
-# scheduled temperature resumes it automatically.
-if [[ $current == "$target" ]]; then rm -f "$override"; printf '%s\n' "$target" >"$last"; exit 0; fi
+# A non-scheduled external temperature change is treated as a manual override.
+# Setting it back to the current scheduled value resumes automation.
+if [[ $current == "$target" ]]; then
+  rm -f "$override"
+  printf '%s\n' "$target" >"$last"
+  exit 0
+fi
 [[ -e $override ]] && exit 0
-if (( fresh_start == 0 )) && [[ -r $last && $current != "$(<"$last")" ]]; then
+if [[ -r $last && $current != "$(<"$last")" ]]; then
   printf '%s\n' "$current" >"$override"
   exit 0
 fi
-for _ in {1..10}; do hyprctl hyprsunset temperature "$target" >/dev/null 2>&1 && { printf '%s\n' "$target" >"$last"; exit 0; }; sleep .2; done
-exit 1
+
+# The target changed (sunrise/sunset) while the current value still matches the
+# last automatic value, so advance to the new scheduled temperature.
+apply_target
