@@ -1,10 +1,10 @@
 # Automatic Night Light
 
-Automatically sets Omarchy's night light from local sunrise and sunset using
+Automatically turns Omarchy's night light on at sunset and off at sunrise using
 the system timezone. No network location lookup is used.
 
-Manual temperature changes are respected for up to 12 hours. The override ends
-earlier as soon as the temperature matches the automatic scheduled value again.
+Manual on/off changes are respected for up to 12 hours, or until the automatic
+schedule reaches the same state.
 
 Install and enable:
 
