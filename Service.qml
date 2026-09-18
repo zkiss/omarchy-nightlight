@@ -1,13 +1,12 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 
 Item {
-  id: root
-
   Process {
     id: runner
-    command: ["bash", "-lc",
-      "bash \"$HOME/.config/omarchy/plugins/zoltan.auto-nightlight/bin/auto-nightlight\""]
+    command: [Quickshell.env("HOME")
+      + "/.config/omarchy/plugins/zoltan.auto-nightlight/bin/auto-nightlight"]
   }
 
   Timer {
@@ -15,6 +14,6 @@ Item {
     repeat: true
     running: true
     triggeredOnStart: true
-    onTriggered: if (!runner.running) runner.running = true
+    onTriggered: runner.running = true
   }
 }
