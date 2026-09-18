@@ -20,43 +20,39 @@ runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
 mkdir -p "$state" "$runtime"
 override="$state/manual-override"
 last="$runtime/last-scheduled-state"
-
-apply_desired() {
-  omarchy shell nightlight "$desired" >/dev/null
-  printf '%s\n' "$desired" >"$last"
-}
+previous=$([[ -r $last ]] && cat "$last" || true)
 
 override_state=""
 if [[ -e $override ]]; then
   override_state=$(<"$override")
   age=$((now - $(stat -c %Y "$override" 2>/dev/null || printf '0')))
   if (( age >= 43200 )); then
-    rm -f "$override" "$last"
+    rm -f "$override"
     override_state=""
+    previous=""
   elif [[ $override_state == "$desired" ]]; then
     rm -f "$override"
     override_state=""
   fi
 fi
 
-# First check of a login: restore a valid override, otherwise apply the schedule.
-if [[ ! -r $last ]]; then
+printf '%s\n' "$desired" >"$last"
+
+# New login or expired override: establish the correct state immediately.
+if [[ -z $previous ]]; then
   omarchy shell nightlight "${override_state:-$desired}" >/dev/null
-  printf '%s\n' "$desired" >"$last"
   exit 0
 fi
 
 current=$(omarchy shell nightlight status 2>/dev/null |
   jq -r 'if .enabled then "enable" else "disable" end')
 
-# Matching the schedule always ends a manual override.
 if [[ $current == "$desired" ]]; then
   rm -f "$override"
-  printf '%s\n' "$desired" >"$last"
 elif [[ -n $override_state ]]; then
   exit 0
-elif [[ "$(<"$last")" != "$desired" ]]; then
-  apply_desired
+elif [[ $previous != "$desired" ]]; then
+  omarchy shell nightlight "$desired" >/dev/null
 else
   # Schedule did not change, so this was a manual toggle.
   printf '%s\n' "$current" >"$override"
