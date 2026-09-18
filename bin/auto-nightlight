@@ -13,91 +13,76 @@ BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,
 [[ $sunrise =~ ^[0-9]+$ && $sunset =~ ^[0-9]+$ ]] || exit 0
 
 now=$(date +%s)
-(( now >= sunset || now < sunrise )) && target=4000 || target=6500
+(( now >= sunset || now < sunrise )) && desired=true || desired=false
 
 persistent_state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"
 runtime_state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
 mkdir -p "$persistent_state" "$runtime_state"
 
 override="$persistent_state/manual-override"
-last="$runtime_state/last-auto-temperature"
+last="$runtime_state/last-auto-state"
 override_max_age=$((12 * 60 * 60))
 
-apply_temperature() {
-  local temperature=$1
-  for _ in {1..10}; do
-    if hyprctl hyprsunset temperature "$temperature" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep .2
-  done
-  return 1
+apply_desired() {
+  local action
+  [[ $desired == true ]] && action=enable || action=disable
+  omarchy shell nightlight "$action" >/dev/null
+  printf '%s\n' "$desired" >"$last"
 }
 
-apply_target() {
-  apply_temperature "$target"
-  printf '%s\n' "$target" >"$last"
-}
-
-override_temperature=""
+override_state=""
 if [[ -e $override ]]; then
   override_mtime=$(stat -c %Y "$override" 2>/dev/null || printf '0')
   override_age=$((now - override_mtime))
-  if (( override_age >= 0 && override_age < override_max_age )); then
-    override_temperature=$(<"$override")
-    [[ $override_temperature =~ ^[0-9]+$ ]] || {
-      rm -f "$override"
-      override_temperature=""
-    }
-  else
+  override_state=$(<"$override")
+
+  if (( override_age < 0 || override_age >= override_max_age )) ||
+     [[ $override_state != true && $override_state != false ]]; then
     rm -f "$override"
+    override_state=""
+  elif [[ $override_state == "$desired" ]]; then
+    # Sunrise/sunset has caught up with the manual choice.
+    rm -f "$override"
+    override_state=""
   fi
 fi
 
-if ! pgrep -x hyprsunset >/dev/null; then
-  setsid uwsm-app -- hyprsunset >/dev/null 2>&1 &
-  sleep 1
+status=$(omarchy shell nightlight status 2>/dev/null) || exit 1
+current=$(jq -r '.enabled // empty' <<<"$status")
+[[ $current == true || $current == false ]] || exit 1
+
+# A persisted override survives a new login/session. Restore it before using the
+# fresh Omarchy state to infer user intent.
+if [[ -n $override_state && ! -r $last ]]; then
+  if [[ $current != "$override_state" ]]; then
+    [[ $override_state == true ]] && action=enable || action=disable
+    omarchy shell nightlight "$action" >/dev/null
+  fi
+  exit 0
 fi
 
-current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
-[[ $current =~ ^[0-9]+$ ]] || exit 1
-
-# Once the current temperature matches the schedule, automation owns the state
-# again immediately, even if a manual override is still within its 12-hour TTL.
-if [[ $current == "$target" ]]; then
+# Once the current state matches the schedule, automation owns it again.
+if [[ $current == "$desired" ]]; then
   rm -f "$override"
-  printf '%s\n' "$target" >"$last"
+  printf '%s\n' "$desired" >"$last"
   exit 0
 fi
 
-if [[ -n $override_temperature ]]; then
-  # On a fresh login/session, restore the persisted manual value rather than
-  # mistaking hyprsunset's initial temperature for a new manual change.
-  if [[ ! -r $last ]]; then
-    apply_temperature "$override_temperature"
-    exit 0
-  fi
+# A still-valid manual override owns the opposite state.
+[[ -n $override_state ]] && exit 0
 
-  # A further manual adjustment restarts the 12-hour window.
-  if [[ $current != "$override_temperature" ]]; then
-    printf '%s\n' "$current" >"$override"
-  fi
-  exit 0
-fi
-
-# No prior automatic state exists in this login/session, so establish it.
+# No automatic state exists yet in this login/session, so establish it.
 if [[ ! -r $last ]]; then
-  apply_target
+  apply_desired
   exit 0
 fi
 
-last_temperature=$(<"$last")
-if [[ $current != "$last_temperature" ]]; then
-  # Something external changed the last value automation applied.
+last_state=$(<"$last")
+if [[ $current != "$last_state" ]]; then
+  # Something external toggled the last state automation applied.
   printf '%s\n' "$current" >"$override"
   exit 0
 fi
 
-# The current value is still the last automatic value, but the scheduled target
-# has changed at sunrise/sunset.
-apply_target
+# The state is still what automation last applied, but sunrise/sunset changed.
+apply_desired
