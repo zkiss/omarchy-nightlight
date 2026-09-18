@@ -4,20 +4,23 @@ This Omarchy service plugin provides automatic sunrise/sunset night-light
 scheduling without network location lookup. It derives coordinates from the
 active system timezone and the local IANA timezone database.
 
-When the plugin service starts, it runs `auto-nightlight startup`, which clears
-any previous manual override and immediately applies the temperature appropriate
-for the current time.
+The service runs the same check once when it loads and then once per minute.
+There is no separate startup mode or systemd setup.
 
-While the service remains loaded, it runs `auto-nightlight periodic` once per
-minute. Periodic runs respect manual temperature changes: a value different
-from the last automatic value pauses automation. The override lasts for up to
-12 hours, or ends earlier if the temperature is set back to the current
-scheduled value. If `hyprsunset` is not running, the plugin starts it and
-restores the scheduled temperature instead of treating its initial value as
-user intent.
+Manual temperature changes are respected for up to 12 hours. The override is
+stored as persistent Omarchy state, so it can survive a shell restart or reboot.
+If the current temperature starts matching the value automation would choose,
+the override is cleared immediately. Changing the manual temperature again
+restarts the 12-hour override window.
 
-No separate systemd setup is required. Installing and enabling the plugin is
-sufficient:
+The last temperature applied automatically is kept only as runtime state. This
+lets the plugin distinguish a manual change from a sunrise/sunset transition
+without carrying stale automatic state across sessions.
+
+If `hyprsunset` is not running, the plugin starts it and restores a still-valid
+manual override; otherwise it applies the scheduled temperature.
+
+Installing and enabling the plugin is sufficient:
 
 ```bash
 omarchy plugin add https://github.com/zkiss/omarchy-nightlight.git --enable
