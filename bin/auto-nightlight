@@ -11,15 +11,35 @@ function sun(up,N,lat,lon,L,t,M,S,A,ql,qr,sd,cd,ch,H,T,U){L=lon/15;t=N+((up?6:18
 BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,p),3);q="date -u -d \"today 00:00\" +%s";q|getline midnight;close(q);q="date +%j";q|getline day;close(q);print sun(1,day,lat,lon),sun(0,day,lat,lon)}')
 [[ $sunrise =~ ^[0-9]+$ && $sunset =~ ^[0-9]+$ ]] || exit 0
 now=$(date +%s); (( now >= sunset || now < sunrise )) && target=4000 || target=6500
-if ! pgrep -x hyprsunset >/dev/null; then uwsm-app -- hyprsunset >/dev/null 2>&1 & sleep 1; fi
+
 state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"; mkdir -p "$state"
-last="$state/last-auto-temperature"; override="$state/manual-override"
+last="$state/last-auto-temperature"; override="$state/manual-override"; boot_marker="$state/boot-id"
+fresh_start=0
+boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+if [[ -n $boot_id ]] && { [[ ! -r $boot_marker ]] || [[ "$(<"$boot_marker")" != "$boot_id" ]]; }; then
+  fresh_start=1
+  printf '%s\n' "$boot_id" >"$boot_marker"
+fi
+
+if ! pgrep -x hyprsunset >/dev/null; then
+  uwsm-app -- hyprsunset >/dev/null 2>&1 & sleep 1
+  fresh_start=1
+fi
+
 current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
 [[ $current =~ ^[0-9]+$ ]] || exit 1
+
+# A fresh boot or hyprsunset process must start in the scheduled state. Do not
+# mistake hyprsunset's initial/default temperature for a manual override.
+if (( fresh_start )); then rm -f "$override"; fi
+
 # A non-scheduled manual temperature pauses automation; setting it back to the
 # scheduled temperature resumes it automatically.
 if [[ $current == "$target" ]]; then rm -f "$override"; printf '%s\n' "$target" >"$last"; exit 0; fi
 [[ -e $override ]] && exit 0
-if [[ -r $last && $current != "$(<"$last")" ]]; then printf '%s\n' "$current" >"$override"; exit 0; fi
+if (( fresh_start == 0 )) && [[ -r $last && $current != "$(<"$last")" ]]; then
+  printf '%s\n' "$current" >"$override"
+  exit 0
+fi
 for _ in {1..10}; do hyprctl hyprsunset temperature "$target" >/dev/null 2>&1 && { printf '%s\n' "$target" >"$last"; exit 0; }; sleep .2; done
 exit 1
