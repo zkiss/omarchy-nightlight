@@ -45,50 +45,50 @@ if [[ -e $override ]]; then
   override_age=$((now - override_mtime))
   if (( override_age >= 0 && override_age < override_max_age )); then
     override_temperature=$(<"$override")
-    [[ $override_temperature =~ ^[0-9]+$ ]] || { rm -f "$override"; override_temperature=""; }
+    [[ $override_temperature =~ ^[0-9]+$ ]] || {
+      rm -f "$override"
+      override_temperature=""
+    }
   else
     rm -f "$override"
   fi
 fi
 
-# If hyprsunset is absent, recreate whichever state currently owns the setting:
-# a still-valid manual override, otherwise the scheduled temperature.
 if ! pgrep -x hyprsunset >/dev/null; then
   setsid uwsm-app -- hyprsunset >/dev/null 2>&1 &
   sleep 1
-  if [[ -n $override_temperature ]]; then
-    apply_temperature "$override_temperature"
-  else
-    apply_target
-  fi
-  exit
 fi
 
 current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
 [[ $current =~ ^[0-9]+$ ]] || exit 1
 
-# If the current value matches what automation wants, the manual override is no
-# longer meaningful, regardless of how recently it was created.
+# Once the current temperature matches the schedule, automation owns the state
+# again immediately, even if a manual override is still within its 12-hour TTL.
 if [[ $current == "$target" ]]; then
   rm -f "$override"
   printf '%s\n' "$target" >"$last"
   exit 0
 fi
 
-# A valid manual override owns the temperature for up to 12 hours. If the user
-# changes it again, store the new value and restart the 12-hour window.
 if [[ -n $override_temperature ]]; then
+  # On a fresh login/session, restore the persisted manual value rather than
+  # mistaking hyprsunset's initial temperature for a new manual change.
+  if [[ ! -r $last ]]; then
+    apply_temperature "$override_temperature"
+    exit 0
+  fi
+
+  # A further manual adjustment restarts the 12-hour window.
   if [[ $current != "$override_temperature" ]]; then
     printf '%s\n' "$current" >"$override"
   fi
   exit 0
 fi
 
-# With no runtime automatic state, this is a fresh session. Establish the
-# scheduled value instead of guessing whether the existing value was manual.
+# No prior automatic state exists in this login/session, so establish it.
 if [[ ! -r $last ]]; then
   apply_target
-  exit
+  exit 0
 fi
 
 last_temperature=$(<"$last")
