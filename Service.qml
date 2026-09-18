@@ -4,28 +4,17 @@ import Quickshell.Io
 Item {
   id: root
 
-  function run() {
-    if (runner.running) return
-    runner.command = [
-      "bash",
-      "-lc",
-      "bash \"$HOME/.config/omarchy/plugins/zoltan.auto-nightlight/bin/auto-nightlight\""
-    ]
-    runner.running = true
-  }
-
   Process {
     id: runner
-    running: false
-    command: []
+    command: ["bash", "-lc",
+      "bash \"$HOME/.config/omarchy/plugins/zoltan.auto-nightlight/bin/auto-nightlight\""]
   }
 
   Timer {
     interval: 60000
     repeat: true
     running: true
-    onTriggered: root.run()
+    triggeredOnStart: true
+    onTriggered: if (!runner.running) runner.running = true
   }
-
-  Component.onCompleted: root.run()
 }
