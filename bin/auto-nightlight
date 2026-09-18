@@ -26,53 +26,46 @@ set_state() {
   omarchy shell nightlight "$action" >/dev/null
 }
 
-apply_desired() {
-  set_state "$desired"
-  printf '%s\n' "$desired" >"$last"
-}
-
 override_state=""
-override_expired=0
 if [[ -e $override ]]; then
   age=$((now - $(stat -c %Y "$override" 2>/dev/null || printf '0')))
-  if (( age >= 0 && age < 43200 )); then
-    override_state=$(<"$override")
-  fi
-  if [[ $override_state != true && $override_state != false ]]; then
-    rm -f "$override"
+  override_state=$(<"$override")
+  if (( age < 0 || age >= 43200 )) ||
+     [[ $override_state != true && $override_state != false ]]; then
+    rm -f "$override" "$last"
     override_state=""
-    override_expired=1
   fi
 fi
 
-# Preserve a still-valid override across login/reboot before trusting the
-# freshly-started nightlight state.
-if [[ -n $override_state && ! -r $last ]]; then
-  if [[ $override_state == "$desired" ]]; then
-    rm -f "$override"
-    apply_desired
-  else
+# First check of a login: restore a valid override, otherwise apply the schedule.
+if [[ ! -r $last ]]; then
+  if [[ -n $override_state && $override_state != "$desired" ]]; then
     set_state "$override_state"
+  else
+    rm -f "$override"
+    set_state "$desired"
   fi
+  printf '%s\n' "$desired" >"$last"
   exit 0
 fi
 
-status=$(omarchy shell nightlight status 2>/dev/null) || exit 1
-current=$(jq -r '.enabled' <<<"$status")
+current=$(omarchy shell nightlight status 2>/dev/null | jq -r '.enabled')
 [[ $current == true || $current == false ]] || exit 1
 
+# Matching the schedule always ends a manual override.
 if [[ $current == "$desired" ]]; then
   rm -f "$override"
   printf '%s\n' "$desired" >"$last"
   exit 0
 fi
 
+# A valid override owns the opposite state until it expires.
 [[ -n $override_state ]] && exit 0
 
-if (( override_expired )) || [[ ! -r $last ]] || [[ "$(<"$last")" != "$desired" ]]; then
-  apply_desired
-  exit 0
+# A changed schedule is automatic; an unchanged schedule means the user toggled.
+if [[ "$(<"$last")" != "$desired" ]]; then
+  set_state "$desired"
+  printf '%s\n' "$desired" >"$last"
+else
+  printf '%s\n' "$current" >"$override"
 fi
-
-# Desired state has not changed, so this mismatch was a manual toggle.
-printf '%s\n' "$current" >"$override"
