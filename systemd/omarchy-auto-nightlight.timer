@@ -1,5 +1,6 @@
 [Unit]
 Description=Keep automatic night light synchronized with sunrise and sunset
+After=omarchy-auto-nightlight-startup.service
 
 [Timer]
 OnStartupSec=30s
