@@ -13,7 +13,7 @@ BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,
 [[ $sunrise =~ ^[0-9]+$ && $sunset =~ ^[0-9]+$ ]] || exit 0
 
 now=$(date +%s)
-(( now >= sunset || now < sunrise )) && desired=true || desired=false
+(( now >= sunset || now < sunrise )) && desired=enable || desired=disable
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
@@ -21,17 +21,16 @@ mkdir -p "$state" "$runtime"
 override="$state/manual-override"
 last="$runtime/last-scheduled-state"
 
-set_state() {
-  [[ $1 == true ]] && action=enable || action=disable
-  omarchy shell nightlight "$action" >/dev/null
+apply_desired() {
+  omarchy shell nightlight "$desired" >/dev/null
+  printf '%s\n' "$desired" >"$last"
 }
 
 override_state=""
 if [[ -e $override ]]; then
-  age=$((now - $(stat -c %Y "$override" 2>/dev/null || printf '0')))
   override_state=$(<"$override")
-  if (( age < 0 || age >= 43200 )) ||
-     [[ $override_state != true && $override_state != false ]]; then
+  age=$((now - $(stat -c %Y "$override" 2>/dev/null || printf '0')))
+  if (( age >= 43200 )); then
     rm -f "$override" "$last"
     override_state=""
   elif [[ $override_state == "$desired" ]]; then
@@ -42,33 +41,23 @@ fi
 
 # First check of a login: restore a valid override, otherwise apply the schedule.
 if [[ ! -r $last ]]; then
-  if [[ -n $override_state && $override_state != "$desired" ]]; then
-    set_state "$override_state"
-  else
-    rm -f "$override"
-    set_state "$desired"
-  fi
+  omarchy shell nightlight "${override_state:-$desired}" >/dev/null
   printf '%s\n' "$desired" >"$last"
   exit 0
 fi
 
-current=$(omarchy shell nightlight status 2>/dev/null | jq -r '.enabled')
-[[ $current == true || $current == false ]] || exit 1
+current=$(omarchy shell nightlight status 2>/dev/null |
+  jq -r 'if .enabled then "enable" else "disable" end')
 
 # Matching the schedule always ends a manual override.
 if [[ $current == "$desired" ]]; then
   rm -f "$override"
   printf '%s\n' "$desired" >"$last"
+elif [[ -n $override_state ]]; then
   exit 0
-fi
-
-# A valid override owns the opposite state until it expires.
-[[ -n $override_state ]] && exit 0
-
-# A changed schedule is automatic; an unchanged schedule means the user toggled.
-if [[ "$(<"$last")" != "$desired" ]]; then
-  set_state "$desired"
-  printf '%s\n' "$desired" >"$last"
+elif [[ "$(<"$last")" != "$desired" ]]; then
+  apply_desired
 else
+  # Schedule did not change, so this was a manual toggle.
   printf '%s\n' "$current" >"$override"
 fi
