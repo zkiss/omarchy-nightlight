@@ -1,7 +1,0 @@
-[Unit]
-Description=Apply automatic night light according to local sunrise and sunset
-After=graphical-session.target
-
-[Service]
-Type=oneshot
-ExecStart=%h/.config/omarchy/plugins/zoltan.auto-nightlight/bin/auto-nightlight

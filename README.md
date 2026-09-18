@@ -1,12 +1,13 @@
 # Automatic Night Light
 
-This local Omarchy plugin bundles the automatic night-light implementation.
-It uses the active system timezone and the local IANA timezone database, never
-network location lookup. It starts in the correct state at graphical login and
-checks each minute.
+Automatically turns Omarchy's night light on at sunset and off at sunrise using
+the system timezone. No network location lookup is used.
 
-Manual temperatures are respected. A different temperature pauses automation;
-setting it back to the current scheduled value resumes it.
+Manual on/off changes are respected for up to 12 hours, or until the automatic
+schedule reaches the same state.
 
-The live systemd user units in `~/.config/systemd/user/` are copies of the
-templates in `systemd/`; the active unit runs this plugin's bundled script.
+Install and enable:
+
+```bash
+omarchy plugin add https://github.com/zkiss/omarchy-nightlight.git --enable
+```

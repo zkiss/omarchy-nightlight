@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Local IANA timezone coordinates + NOAA solar calculation; no network calls.
 set -euo pipefail
+
 zone=$(readlink -f /etc/localtime | sed -n 's#^/usr/share/zoneinfo/##p')
 coords=$(awk -v z="$zone" '$3 == z { print $2; exit }' /usr/share/zoneinfo/zone.tab)
 [[ -n $coords ]] || exit 0
@@ -10,16 +11,49 @@ function dec(p,k,s,x,g,m,q){s=substr(p,1,1)=="-"?-1:1;x=substr(p,2);g=substr(x,1
 function sun(up,N,lat,lon,L,t,M,S,A,ql,qr,sd,cd,ch,H,T,U){L=lon/15;t=N+((up?6:18)-L)/24;M=.9856*t-3.289;S=n(M+1.916*sin(r(M))+.020*sin(r(2*M))+282.634);A=n(d(atan2(.91764*sin(r(S)),cos(r(S)))))/15;ql=int(S/90)*90;qr=int(A*15/90)*90;A+=(ql-qr)/15;sd=.39782*sin(r(S));cd=sqrt(1-sd*sd);ch=(cos(r(90.833))-sd*sin(r(lat)))/(cd*cos(r(lat)));if(ch>1||ch< -1)return -1;H=up?360-d(atan2(sqrt(1-ch*ch),ch)):d(atan2(sqrt(1-ch*ch),ch));T=H/15+A-.06571*t-6.622;U=(T-L)%24;if(U<0)U+=24;return midnight+int(U*3600+.5)}
 BEGIN{p=match(substr(c,2),/[+-]/)+1;lat=dec(substr(c,1,p-1),2);lon=dec(substr(c,p),3);q="date -u -d \"today 00:00\" +%s";q|getline midnight;close(q);q="date +%j";q|getline day;close(q);print sun(1,day,lat,lon),sun(0,day,lat,lon)}')
 [[ $sunrise =~ ^[0-9]+$ && $sunset =~ ^[0-9]+$ ]] || exit 0
-now=$(date +%s); (( now >= sunset || now < sunrise )) && target=4000 || target=6500
-if ! pgrep -x hyprsunset >/dev/null; then uwsm-app -- hyprsunset >/dev/null 2>&1 & sleep 1; fi
-state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"; mkdir -p "$state"
-last="$state/last-auto-temperature"; override="$state/manual-override"
-current=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)
-[[ $current =~ ^[0-9]+$ ]] || exit 1
-# A non-scheduled manual temperature pauses automation; setting it back to the
-# scheduled temperature resumes it automatically.
-if [[ $current == "$target" ]]; then rm -f "$override"; printf '%s\n' "$target" >"$last"; exit 0; fi
-[[ -e $override ]] && exit 0
-if [[ -r $last && $current != "$(<"$last")" ]]; then printf '%s\n' "$current" >"$override"; exit 0; fi
-for _ in {1..10}; do hyprctl hyprsunset temperature "$target" >/dev/null 2>&1 && { printf '%s\n' "$target" >"$last"; exit 0; }; sleep .2; done
-exit 1
+
+now=$(date +%s)
+(( now >= sunset || now < sunrise )) && desired=enable || desired=disable
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-nightlight"
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy/auto-nightlight"
+mkdir -p "$state" "$runtime"
+override="$state/manual-override"
+last="$runtime/last-scheduled-state"
+previous=$([[ -r $last ]] && cat "$last" || true)
+
+override_state=""
+if [[ -e $override ]]; then
+  override_state=$(<"$override")
+  age=$((now - $(stat -c %Y "$override" 2>/dev/null || printf '0')))
+  if (( age >= 43200 )); then
+    rm -f "$override"
+    override_state=""
+    previous=""
+  elif [[ $override_state == "$desired" ]]; then
+    rm -f "$override"
+    override_state=""
+  fi
+fi
+
+printf '%s\n' "$desired" >"$last"
+
+# New login or expired override: establish the correct state immediately.
+if [[ -z $previous ]]; then
+  omarchy shell nightlight "${override_state:-$desired}" >/dev/null
+  exit 0
+fi
+
+current=$(omarchy shell nightlight status 2>/dev/null |
+  jq -r 'if .enabled then "enable" else "disable" end')
+
+if [[ $current == "$desired" ]]; then
+  rm -f "$override"
+elif [[ -n $override_state ]]; then
+  exit 0
+elif [[ $previous != "$desired" ]]; then
+  omarchy shell nightlight "$desired" >/dev/null
+else
+  # Schedule did not change, so this was a manual toggle.
+  printf '%s\n' "$current" >"$override"
+fi
