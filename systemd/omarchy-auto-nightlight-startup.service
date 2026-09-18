@@ -1,0 +1,10 @@
+[Unit]
+Description=Initialize automatic night light at graphical login
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/omarchy/plugins/zoltan.auto-nightlight/bin/auto-nightlight startup
+
+[Install]
+WantedBy=graphical-session.target
