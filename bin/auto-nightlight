@@ -48,8 +48,18 @@ if [[ -e $override ]]; then
 fi
 
 status=$(omarchy shell nightlight status 2>/dev/null) || exit 1
-current=$(jq -r '.enabled // empty' <<<"$status")
+current=$(jq -r '.enabled' <<<"$status")
 [[ $current == true || $current == false ]] || exit 1
+
+if [[ -r $last ]]; then
+  last_state=$(<"$last")
+  if [[ $last_state != true && $last_state != false ]]; then
+    rm -f "$last"
+    last_state=""
+  fi
+else
+  last_state=""
+fi
 
 # A persisted override survives a new login/session. Restore it before using the
 # fresh Omarchy state to infer user intent.
@@ -77,7 +87,6 @@ if [[ ! -r $last ]]; then
   exit 0
 fi
 
-last_state=$(<"$last")
 if [[ $current != "$last_state" ]]; then
   # Something external toggled the last state automation applied.
   printf '%s\n' "$current" >"$override"
